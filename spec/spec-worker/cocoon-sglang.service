@@ -1,5 +1,5 @@
 [Unit]
-Description=vllm docker container
+Description=sglang docker container
 Requires=docker.service
 After=docker.service
 
