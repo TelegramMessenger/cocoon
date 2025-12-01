@@ -1447,7 +1447,14 @@ struct Verifier {
 
     auto status = do_verify(cert, error_depth);
     if (status.is_error()) {
-      // TODO: set openssl error
+      FLOG(ERROR) {
+        sb << "Certificate verification callback:\n";
+        sb << "  Preverify result: " << (preverify_ok ? "OK" : "FAILED") << "\n";
+        sb << "  Context pointer: " << ctx << "\n";
+        if (cert) {
+          append_cert_info(cert, sb);
+        }
+      };
       LOG(ERROR) << "Invalid certificate: " << status;
       return 0;
     }
