@@ -28,7 +28,8 @@ WorkerRunningRequest::WorkerRunningRequest(td::Bits256 proxy_request_id, TcpClie
                                          runner_config->root_contract_config->prompt_tokens_price_multiplier(),
                                          runner_config->root_contract_config->cached_tokens_price_multiplier(),
                                          runner_config->root_contract_config->completion_tokens_price_multiplier(),
-                                         runner_config->root_contract_config->reasoning_tokens_price_multiplier());
+                                         runner_config->root_contract_config->reasoning_tokens_price_multiplier(),
+                                         runner_config->root_contract_config->price_per_token());
 }
 
 /*
@@ -165,26 +166,30 @@ void WorkerRunningRequest::send_error(td::Status error) {
   finish_request(false);
 }
 
-void WorkerRunningRequest::send_answer(std::unique_ptr<ton::http::HttpResponse> response, td::BufferSlice payload,
+void WorkerRunningRequest::send_answer(std::unique_ptr<ton::http::HttpResponse> response, td::BufferSlice orig_payload,
                                        bool payload_is_completed) {
   if (completed_) {
     return;
   }
   LOG(DEBUG) << "worker request " << proxy_request_id_.to_hex() << ": starting sending answer";
 
-  stats()->answer_bytes_sent += (double)payload.size();
-  if (payload.size() > 0) {
-    payload_parts_++;
-    payload_bytes_ += payload.size();
+  auto payload_to_send = tokens_counter_->add_next_answer_slice(orig_payload.as_slice());
+  if (payload_is_completed) {
+    payload_to_send = payload_to_send + tokens_counter_->finalize();
   }
-  tokens_counter_->add_next_answer_slice(payload.as_slice());
+
+  stats()->answer_bytes_sent += (double)payload_to_send.size();
+  if (payload_to_send.size() > 0) {
+    payload_parts_++;
+    payload_bytes_ += payload_to_send.size();
+  }
 
   auto r = response->store_tl();
 
   //http.response http_version:string status_code:int reason:string headers:(vector http.header) payload:bytes = http.Response;
   auto res = cocoon::cocoon_api::make_object<cocoon_api::http_response>(
       r->http_version_, r->status_code_, r->reason_, std::vector<ton::tl_object_ptr<cocoon_api::http_header>>(),
-      std::move(payload));
+      td::BufferSlice(payload_to_send));
 
   for (auto &h : r->headers_) {
     if (h->name_ == "Content-Length" || h->name_ == "Transfer-Encoding" || h->name_ == "Connection") {
@@ -192,7 +197,7 @@ void WorkerRunningRequest::send_answer(std::unique_ptr<ton::http::HttpResponse> 
     }
     res->headers_.push_back(cocoon::cocoon_api::make_object<cocoon_api::http_header>(h->name_, h->value_));
   }
-  
+
   // Add debug timing headers using Unix timestamps
   res->headers_.push_back(cocoon::cocoon_api::make_object<cocoon_api::http_header>(
       "X-Cocoon-Worker-Start", PSTRING() << td::StringBuilder::FixedDouble(started_at_unix_, 6)));
@@ -218,7 +223,7 @@ void WorkerRunningRequest::send_answer(std::unique_ptr<ton::http::HttpResponse> 
   }
 }
 
-void WorkerRunningRequest::send_payload_part(td::BufferSlice payload_part, bool payload_is_completed) {
+void WorkerRunningRequest::send_payload_part(td::BufferSlice orig_payload_part, bool payload_is_completed) {
   if (completed_) {
     return;
   }
@@ -227,17 +232,21 @@ void WorkerRunningRequest::send_payload_part(td::BufferSlice payload_part, bool 
   CHECK(sent_answer_);
   CHECK(!completed_);
 
-  payload_parts_++;
-  payload_bytes_ += payload_part.size();
-  stats()->answer_bytes_sent += (double)payload_part.size();
-  tokens_counter_->add_next_answer_slice(payload_part.as_slice());
-
+  auto payload_to_send = tokens_counter_->add_next_answer_slice(orig_payload_part.as_slice());
   if (payload_is_completed) {
-    tokens_counter_->finalize();
+    payload_to_send = payload_to_send + tokens_counter_->finalize();
   }
 
+  if (!payload_to_send.size() && !payload_is_completed) {
+    return;
+  }
+
+  payload_parts_++;
+  payload_bytes_ += payload_to_send.size();
+  stats()->answer_bytes_sent += (double)payload_to_send.size();
+
   auto ans = cocoon::cocoon_api::make_object<cocoon_api::proxy_queryAnswerPart>(
-      std::move(payload_part), payload_is_completed, proxy_request_id_, tokens_counter_->usage());
+      td::BufferSlice(payload_to_send), payload_is_completed, proxy_request_id_, tokens_counter_->usage());
   td::actor::send_closure(runner_, &WorkerRunner::send_message_to_connection, proxy_connection_id_,
                           cocoon::serialize_tl_object(ans, true));
 
