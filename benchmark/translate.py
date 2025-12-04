@@ -32,6 +32,25 @@ def get_azure_headers() -> dict:
     }
 
 
+# Google Translate configuration
+def get_google_api_key() -> str:
+    """Get Google Cloud API key from environment."""
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY environment variable is not set")
+    return api_key
+
+
+# Language code mapping for Google Translate
+GOOGLE_LANG_MAP = {
+    "en": "en", "ru": "ru", "zh": "zh-CN", "es": "es", "tr": "tr",
+    "pt": "pt", "ko": "ko", "id": "id", "ar": "ar", "fr": "fr",
+    "vi": "vi", "ja": "ja", "it": "it", "fa": "fa", "de": "de",
+    "uk": "uk", "uz": "uz", "pl": "pl", "nl": "nl", "he": "iw",  # Hebrew is 'iw' in Google
+    "cs": "cs", "hu": "hu", "th": "th", "hi": "hi", "bn": "bn",
+}
+
+
 @dataclass
 class TimingInfo:
     """Timing information from client/proxy/worker chain.
@@ -823,7 +842,7 @@ def add_translate_args(parser, include_concurrency=False):
     parser.add_argument('--model', default='Qwen/Qwen3-8B',
                         help='Model name')
     parser.add_argument('--prompt-format', default='roles',
-                        choices=['roles', 'harmony', 'harmony-lib', 'hunyuan', 'raw'],
+                        choices=['roles', 'harmony', 'harmony-lib', 'hunyuan', 'raw', 'google'],
                         help='Prompt format')
     parser.add_argument('--timeout', type=int, default=40,
                         help='Request timeout in seconds')
@@ -897,6 +916,78 @@ def load_config_from_file(config_path: str) -> TranslateConfig:
     )
 
 
+def translate_google(
+    text: Union[str, List[str]],
+    target_lang: str,
+    config: TranslateConfig = None
+) -> TranslationResult:
+    """
+    Translate using Google Cloud Translation API.
+    
+    Requires GOOGLE_API_KEY environment variable.
+    """
+    import time
+    
+    if config is None:
+        config = TranslateConfig()
+    
+    # Extract language code from target_lang like "Russian (ru)" -> "ru"
+    import re
+    lang_match = re.search(r'\((\w+)\)', target_lang)
+    if lang_match:
+        lang_code = lang_match.group(1)
+    else:
+        lang_code = target_lang.lower()[:2]
+    
+    # Map to Google's language code
+    google_lang = GOOGLE_LANG_MAP.get(lang_code, lang_code)
+    
+    api_key = get_google_api_key()
+    url = f"https://translation.googleapis.com/language/translate/v2?key={api_key}"
+    
+    # Handle single text or list
+    if isinstance(text, list):
+        source_text = "\n".join(text)
+    else:
+        source_text = text
+    
+    payload = {
+        "q": source_text,
+        "target": google_lang,
+        "format": "text"
+    }
+    
+    start_time = time.time()
+    
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=config.timeout
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        translation = result["data"]["translations"][0]["translatedText"]
+        
+        # Unescape HTML entities that Google sometimes returns
+        import html
+        translation = html.unescape(translation)
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        
+        if config.verbose:
+            print(f"  [google] {lang_code} -> {google_lang}: {len(source_text)} chars, {duration:.2f}s")
+        
+        timing = TimingInfo(client_start=start_time, client_end=end_time)
+        return TranslationResult(translation=translation, timing=timing)
+        
+    except requests.exceptions.RequestException as e:
+        duration = time.time() - start_time
+        raise Exception(f"Google Translate API error: {e}")
+
+
 def translate(
     text: Union[str, List[str]],
     target_lang: str,
@@ -926,6 +1017,8 @@ def translate(
         return translate_hunyuan(text, target_lang, config)
     elif fmt == "raw":
         return translate_raw(text, target_lang, config)
+    elif fmt == "google":
+        return translate_google(text, target_lang, config)
     else:  # "roles" (default) or anything else
         return translate_with_roles(text, target_lang, config)
 
