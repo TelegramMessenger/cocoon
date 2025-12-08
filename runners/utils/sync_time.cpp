@@ -32,6 +32,7 @@ td::actor::Task<td::Unit> sync(Options opts) {
 
 int main(int argc, char* argv[]) {
   SET_VERBOSITY_LEVEL(verbosity_INFO);
+  td::set_default_failure_signal_handler().ensure();
 
   td::OptionParser options;
   std::string ton_config = "../reprodebian/test-spec/spec-proxy/runtime/global.config.json";

@@ -4,10 +4,12 @@
 #include "td/utils/OptionParser.h"
 #include "td/utils/base64.h"
 #include "td/utils/port/Stat.h"
+#include "td/utils/port/signals.h"
 #include "td/utils/port/user.h"
 
 int main(int argc, char **argv) {
   SET_VERBOSITY_LEVEL(VERBOSITY_NAME(DEBUG));
+  td::set_default_failure_signal_handler().ensure();
   int threads_n = 0;
 
   std::map<std::string, tdx::TdxInterfaceRef> tdxs;

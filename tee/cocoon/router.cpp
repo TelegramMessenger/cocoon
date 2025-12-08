@@ -7,6 +7,7 @@
 #include "td/utils/logging.h"
 #include "td/utils/OptionParser.h"
 #include "td/utils/as.h"
+#include "td/utils/port/signals.h"
 #include "tdactor/td/actor/actor.h"
 #include <iostream>
 #include <map>
@@ -257,6 +258,7 @@ td::Status parse_port_spec(td::Slice spec, PortConfig &port_config) {
 
 int main(int argc, char **argv) {
   SET_VERBOSITY_LEVEL(VERBOSITY_NAME(INFO));
+  td::set_default_failure_signal_handler().ensure();
 
   CliArgs args;
 
