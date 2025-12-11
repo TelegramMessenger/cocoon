@@ -342,7 +342,8 @@ td::Result<std::string> get_status_human(const std::string& svc) {
   if (!is_valid_service(svc)) {
     return td::Status::Error("Invalid or unauthorized service name");
   }
-  return exec_command_safe({"systemctl", "status", svc, "--no-pager"});
+  // systemctl status exit codes: 0=running, 1=dead+pidfile, 2=dead+lockfile, 3=not running, 4=unknown
+  return exec_command_safe({"systemctl", "status", svc, "--no-pager"}, {0, 1, 2, 3, 4});
 }
 
 td::Result<std::string> get_logs(const std::string& svc, int lines) {

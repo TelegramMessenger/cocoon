@@ -18,7 +18,8 @@
 namespace cocoon {
 
 // Forward declare from health-monitor.cpp
-td::Result<std::string> exec_command_safe(const std::vector<std::string>& args);
+td::Result<std::string> exec_command_safe(const std::vector<std::string>& args,
+                                          std::vector<int> allowed_exit_codes = {0});
 
 namespace metrics {
 

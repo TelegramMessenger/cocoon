@@ -20,7 +20,9 @@ extern std::vector<std::string> MONITORED_SERVICES;
 bool is_valid_service(const std::string& service);
 
 // Forward declare exec_command_safe
-td::Result<std::string> exec_command_safe(const std::vector<std::string>& args);
+// allowed_exit_codes: list of exit codes that should return output instead of error
+td::Result<std::string> exec_command_safe(const std::vector<std::string>& args,
+                                          std::vector<int> allowed_exit_codes = {0});
 
 namespace render_service {
 td::Result<std::string> get_status(const std::string& svc);

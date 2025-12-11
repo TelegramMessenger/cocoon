@@ -132,7 +132,8 @@ std::vector<std::string> discover_services() {
 // Safe Command Execution
 // ============================================================================
 
-td::Result<std::string> exec_command_safe(const std::vector<std::string>& args) {
+td::Result<std::string> exec_command_safe(const std::vector<std::string>& args,
+                                          std::vector<int> allowed_exit_codes) {
   if (args.empty()) {
     return td::Status::Error("Empty command");
   }
@@ -183,11 +184,15 @@ td::Result<std::string> exec_command_safe(const std::vector<std::string>& args) 
   while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {
   }
 
-  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+  int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  bool is_allowed = std::find(allowed_exit_codes.begin(), allowed_exit_codes.end(), exit_code) !=
+                    allowed_exit_codes.end();
+
+  if (is_allowed) {
     return result;
   }
 
-  return td::Status::Error(PSLICE() << "Command exited with code " << (WIFEXITED(status) ? WEXITSTATUS(status) : -1));
+  return td::Status::Error(PSLICE() << "Command exited with code " << exit_code);
 }
 
 // ============================================================================
