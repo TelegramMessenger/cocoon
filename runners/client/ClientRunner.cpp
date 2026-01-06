@@ -370,9 +370,19 @@ void ClientRunner::receive_http_request(
     std::unique_ptr<ton::http::HttpRequest> request, std::shared_ptr<ton::http::HttpPayload> payload,
     td::Promise<std::pair<std::unique_ptr<ton::http::HttpResponse>, std::shared_ptr<ton::http::HttpPayload>>> promise) {
   if (request->method() == "OPTIONS") {
-    // TODO: return 204
-    std::string data = "<http><body>OK</body></http>";
-    http_send_static_answer(std::move(data), std::move(promise));
+    auto response =
+        ton::http::HttpResponse::create("HTTP/1.0", static_cast<ton::http::HttpStatusCode>(204), "no content", false,
+                                        false)
+            .move_as_ok();
+    response->add_header(ton::http::HttpHeader{"Access-Control-Allow-Origin", "*"});
+    response->add_header(ton::http::HttpHeader{"Access-Control-Allow-Methods", "GET, POST, OPTIONS"});
+    response->add_header(ton::http::HttpHeader{"Access-Control-Allow-Headers", "Content-Type, Authorization"});
+    response->add_header(ton::http::HttpHeader{"Content-Length", "0"});
+    response->complete_parse_header();
+
+    auto empty_payload = response->create_empty_payload().move_as_ok();
+    empty_payload->complete_parse();
+    promise.set_result(std::make_pair(std::move(response), std::move(empty_payload)));
     return;
   }
   if (request->url() == "/v1/models") {
