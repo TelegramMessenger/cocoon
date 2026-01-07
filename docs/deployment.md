@@ -44,7 +44,14 @@ cd cocoon
 ./scripts/cocoon-launch --build-dir <path> --just-build 
 ```
 
-**Manual build:**
+**Manual build:**  
+Install Dependencies:  
+```bash
+sudo apt install libjemalloc-dev liblz4-dev # Debian, Ubuntu
+sudo dnf install jemalloc-devel lz4-devel # Fedora, CentOS
+sudo pacman -S jemalloc lz4 # Arch Linux
+```  
+Build:  
 ```bash
 mkdir build && cd build
 cmake -GNinja \
