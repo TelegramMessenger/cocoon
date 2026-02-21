@@ -25,6 +25,8 @@ libmicrohttpd-0.9.77-w32-bin.zip
 openssl-3.1.4.zip
 readline-5.0-1-lib.zip
 benchmark/server
+benchmark/hey
+nul
 mt-tools/data/
 mt-tools/.venv/
 mt-tools/uv.lock

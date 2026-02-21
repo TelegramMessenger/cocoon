@@ -506,13 +506,15 @@ def run_client_local(cfg: Config):
 
     # Start router (SOCKS5 only, no reverse proxy) with colored output
     router = f'{cfg.build_dir}/tee/router'
-    router_proc = popen([router, '-S', '8116@tdx', '--serialize-info'],
+    router_policy = os.environ.get('COCOON_ROUTER_POLICY', 'tdx')
+    router_proc = popen([router, '-S', f'8116@{router_policy}', '--serialize-info'],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     router_thread = threading.Thread(target=stream_output, args=(router_proc, 'ROUTER', '36'), daemon=True)
     router_thread.start()
 
     # Run client with colored output
-    client_cmd = [f'{cfg.build_dir}/client-runner', '--config', f'{cfg.local_run_dir}/client-config.json', '-v3']
+    client_verbosity = os.environ.get('COCOON_CLIENT_VERBOSITY', '3')
+    client_cmd = [f'{cfg.build_dir}/client-runner', '--config', f'{cfg.local_run_dir}/client-config.json', f'-v{client_verbosity}']
     if cfg.fake_ton:
         client_cmd += ['--disable-ton', f'{cfg.local_run_dir}/fake-ton-config.json']
 
@@ -651,9 +653,11 @@ def ensure_build(build_dir: Path, targets: list[str]):
              '-S', str(script_dir),
              '-B', str(build_dir)], check=True)
 
-    # Build targets
-    print(f'Building {", ".join(targets)}...')
-    run(['cmake', '--build', str(build_dir), '-j', str(os.cpu_count() or 4),
+    # Build targets (set COCOON_BUILD_JOBS if you hit OOM e.g. on WSL)
+    jobs = os.environ.get('COCOON_BUILD_JOBS')
+    jobs = int(jobs) if jobs is not None else (os.cpu_count() or 4)
+    print(f'Building {", ".join(targets)}... (jobs={jobs})')
+    run(['cmake', '--build', str(build_dir), '-j', str(jobs),
          '--target'] + targets, check=True)
 
 

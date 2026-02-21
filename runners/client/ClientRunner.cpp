@@ -93,7 +93,7 @@ void ClientRunner::run_get_models_request(
           jb.stop_object();
 
           auto res = jb.as_cslice().str();
-          http_send_static_answer(std::move(res), std::move(promise));
+          http_send_static_answer(std::move(res), std::move(promise), "application/json");
         });
   } else {
     auto request = cocoon::create_serialize_tl_object<cocoon_api::client_getWorkerTypesV2>();
@@ -134,7 +134,7 @@ void ClientRunner::run_get_models_request(
           jb.stop_object();
 
           auto res = jb.as_cslice().str();
-          http_send_static_answer(std::move(res), std::move(promise));
+          http_send_static_answer(std::move(res), std::move(promise), "application/json");
         });
   }
 }

@@ -35,10 +35,19 @@ if command -v hey &> /dev/null; then
     HEY_CMD="hey"
 elif [ -f "$HOME/go/bin/hey" ]; then
     HEY_CMD="$HOME/go/bin/hey"
-else
+elif command -v go &> /dev/null; then
     echo "Installing hey..."
     go install github.com/rakyll/hey@latest
     HEY_CMD="$HOME/go/bin/hey"
+else
+    echo "Go not found. Downloading hey binary..."
+    HEY_DIR="$(cd "$(dirname "$0")" && pwd)"
+    HEY_BIN="$HEY_DIR/hey"
+    if [ ! -f "$HEY_BIN" ]; then
+        curl -sSL -o "$HEY_BIN" "https://storage.googleapis.com/hey-releases/hey_linux_amd64"
+        chmod +x "$HEY_BIN"
+    fi
+    HEY_CMD="$HEY_BIN"
 fi
 
 # Parse arguments
