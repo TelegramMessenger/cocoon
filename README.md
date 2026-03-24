@@ -21,6 +21,16 @@ requiring secure AI compute
 
 - **Build Instructions**: See below for reproducing worker distribution from source
 
+## Prerequisites
+
+Before building or running the components in this repository, ensure you have the following installed:
+
+- **CMake** 3.16 or higher
+- **Docker** (for reproducible builds and VM image creation)
+- **Git** with submodule support (use `git clone --recurse-submodules`)
+- **QEMU** (optional, for local VM testing)
+- **Python 3** (for helper scripts)
+
 ## Reproducible Build
 
 Anyone can verify the worker distribution by rebuilding from source. Note that this step is not needed to run your own workers.
