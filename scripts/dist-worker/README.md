@@ -155,7 +155,13 @@ Workers need persistent keys that:
 - One `seal-server` instance can serve multiple workers
 - Without `seal-server`, workers will fail to initialize
 
-**For test mode:** `seal-server` is not required when using `--test --fake-ton` flags.
+**For test mode:**
+
+`seal-server` is not required when using `--test --fake-ton` flags.
+
+**Common Issues:**
+
+In case you miss required libraries (such as `libsgx_dcap_ql.so`), refer to [Intel SGX Installation Guide](https://cc-enabling.trustedservices.intel.com/intel-sgx-sw-installation-guide-linux/02/installation_instructions/) to get it for your distro.
 
 ## Monitoring
 
