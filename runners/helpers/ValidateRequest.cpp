@@ -1412,73 +1412,106 @@ std::string AnswerPostprocessor::add_next_answer_slice(td::Slice event) {
   last_ += event.str();
 
   td::StringBuilder sb;
+  // SSE streams from vLLM start with "data:"; anything else is a single-JSON reply.
+  size_t first_ch = last_.find_first_not_of(" \t\r\n");
+  bool sse_mode = first_ch != std::string::npos && last_[first_ch] == 'd';
+
   std::stringstream ss(last_);
   size_t pos = 0;
-  bool is_end = false;
-  while (!is_end) {
-    try {
-      nlohmann::json v;
-      ss >> v;
-      pos = ss.tellg();
+  while (true) {
+    nlohmann::json v;
+    if (sse_mode) {
+      size_t end = last_.find("\n\n", pos);
+      if (end == std::string::npos) {
+        break;
+      }
+      std::string line = last_.substr(pos, end - pos);
+      pos = end + 2;
+      if (line.rfind("data:", 0) != 0) {
+        continue;
+      }
+      std::string payload = line.substr(5);
+      if (!payload.empty() && payload.front() == ' ') {
+        payload.erase(payload.begin());
+      }
+      if (payload == "[DONE]") {
+        sb << "data: [DONE]\n\n";
+        continue;
+      }
+      try {
+        v = nlohmann::json::parse(payload);
+      } catch (...) {
+        sb << "data: " << payload << "\n\n";
+        continue;
+      }
+    } else {
+      try {
+        ss >> v;
+        pos = ss.tellg();
+      } catch (...) {
+        break;
+      }
+    }
 
-      bool updated = false;
+    bool updated = false;
 
-      {
-        auto val = get_json_value(v, {"usage", "prompt_tokens"});
-        if (val > prompt_tokens_) {
-          prompt_tokens_ = val;
-          updated = true;
-        }
+    {
+      auto val = get_json_value(v, {"usage", "prompt_tokens"});
+      if (val > prompt_tokens_) {
+        prompt_tokens_ = val;
+        updated = true;
       }
-      {
-        auto val = get_json_value(v, {"usage", "prompt_tokens_details", "cached_tokens"});
-        if (val > cached_tokens_) {
-          cached_tokens_ = val;
-          updated = true;
-        }
+    }
+    {
+      auto val = get_json_value(v, {"usage", "prompt_tokens_details", "cached_tokens"});
+      if (val > cached_tokens_) {
+        cached_tokens_ = val;
+        updated = true;
       }
-      {
-        auto val = get_json_value(v, {"usage", "completion_tokens"});
-        if (val > completion_tokens_) {
-          completion_tokens_ = val;
-          updated = true;
-        }
+    }
+    {
+      auto val = get_json_value(v, {"usage", "completion_tokens"});
+      if (val > completion_tokens_) {
+        completion_tokens_ = val;
+        updated = true;
       }
-      {
-        auto val = get_json_value(v, {"usage", "completion_tokens_details", "reasoning_tokens"});
-        if (val > reasoning_tokens_) {
-          reasoning_tokens_ = val;
-          updated = true;
-        }
+    }
+    {
+      auto val = get_json_value(v, {"usage", "completion_tokens_details", "reasoning_tokens"});
+      if (val > reasoning_tokens_) {
+        reasoning_tokens_ = val;
+        updated = true;
       }
-      {
-        auto val = get_json_value(v, {"usage", "reasoning_tokens"});
-        if (val > reasoning_tokens_) {
-          reasoning_tokens_ = val;
-          updated = true;
-        }
+    }
+    {
+      auto val = get_json_value(v, {"usage", "reasoning_tokens"});
+      if (val > reasoning_tokens_) {
+        reasoning_tokens_ = val;
+        updated = true;
       }
+    }
 
-      if (updated) {
-        auto prompt_tokens_adj = adjust_tokens(prompt_tokens_ - cached_tokens_, coef_, prompt_tokens_mult_);
-        auto cached_tokens_adj = adjust_tokens(cached_tokens_, coef_, cached_tokens_mult_);
-        auto completion_tokens_adj =
-            adjust_tokens(completion_tokens_ - reasoning_tokens_, coef_, completion_tokens_mult_);
-        auto reasoning_tokens_adj = adjust_tokens(reasoning_tokens_, coef_, reasoning_tokens_mult_);
+    if (updated) {
+      auto prompt_tokens_adj = adjust_tokens(prompt_tokens_ - cached_tokens_, coef_, prompt_tokens_mult_);
+      auto cached_tokens_adj = adjust_tokens(cached_tokens_, coef_, cached_tokens_mult_);
+      auto completion_tokens_adj =
+          adjust_tokens(completion_tokens_ - reasoning_tokens_, coef_, completion_tokens_mult_);
+      auto reasoning_tokens_adj = adjust_tokens(reasoning_tokens_, coef_, reasoning_tokens_mult_);
 
-        v["usage"]["prompt_total_cost"] = (prompt_tokens_adj + cached_tokens_adj) * price_per_token_;
-        v["usage"]["completion_total_cost"] = (completion_tokens_adj + reasoning_tokens_adj) * price_per_token_;
-        v["usage"]["total_cost"] =
-            (prompt_tokens_adj + cached_tokens_adj + completion_tokens_adj + reasoning_tokens_adj) * price_per_token_;
-      }
+      v["usage"]["prompt_total_cost"] = (prompt_tokens_adj + cached_tokens_adj) * price_per_token_;
+      v["usage"]["completion_total_cost"] = (completion_tokens_adj + reasoning_tokens_adj) * price_per_token_;
+      v["usage"]["total_cost"] =
+          (prompt_tokens_adj + cached_tokens_adj + completion_tokens_adj + reasoning_tokens_adj) * price_per_token_;
+    }
 
-      if (!sender_private_key_.is_zero()) {
-        encrypt_json(v, sender_private_key_, receiver_public_key_, false);
-      }
+    if (!sender_private_key_.is_zero()) {
+      encrypt_json(v, sender_private_key_, receiver_public_key_, false);
+    }
 
+    if (sse_mode) {
+      sb << "data: " << v.dump() << "\n\n";
+    } else {
       sb << v.dump() << "\n";
-    } catch (...) {
-      is_end = true;
     }
   }
   last_ = last_.substr(pos);
@@ -1496,12 +1529,18 @@ ton::tl_object_ptr<cocoon_api::tokensUsed> AnswerPostprocessor::usage() {
 }
 
 std::string AnswerPostprocessor::finalize() {
-  if (last_.size() > 0) {
-    /* probably just whitespace*/
-    if (last_.size() >= 4) {
-      LOG(ERROR) << "worker request: unprocessed data in answer: bytes=" << last_.size();
-    }
-    // do something?
+  if (last_.empty()) {
+    return "";
+  }
+  // SSE tail without a terminating "\n\n": synthesize one so the final event is parsed.
+  size_t first_ch = last_.find_first_not_of(" \t\r\n");
+  if (first_ch != std::string::npos && last_[first_ch] == 'd') {
+    std::string tail = std::move(last_);
+    last_.clear();
+    return add_next_answer_slice(tail + "\n\n");
+  }
+  if (last_.size() >= 4) {
+    LOG(ERROR) << "worker request: unprocessed data in answer: bytes=" << last_.size();
   }
   return "";
 }
