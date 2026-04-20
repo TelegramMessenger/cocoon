@@ -715,13 +715,15 @@ ton::tl_object_ptr<cocoon_api::rootConfig_Config> RootContractConfig::serialize(
   auto verified_worker_keys = verified_worker_keys_;
   auto verified_key_manager_keys = verified_key_manager_keys_;
 
+  std::string key_manager_addr_str = key_manager_addr_.is_valid() ? (PSTRING() << key_manager_addr_) : "";
+
   return cocoon::create_tl_object<cocoon_api::rootConfig_configV7>(
       owner_.rserialize(true), std::move(accepted_proxy_hashes), std::move(proxies), last_proxy_seqno_,
       std::move(workers), std::move(models), version_, struct_version_, params_version_, unique_id_, is_test_ ? 1 : 0,
       (int)price_per_token_, (int)worker_fee_per_token_, prompt_tokens_price_multiplier_,
       cached_tokens_price_multiplier_, completion_tokens_price_multiplier_, reasoning_tokens_price_multiplier_,
       proxy_delay_before_close_, client_delay_before_close_, min_proxy_stake_, min_client_stake_, std::move(pub_keys),
-      key_manager_public_key_, key_manager_image_hash_, PSTRING() << key_manager_addr_, std::move(verified_proxy_keys),
+      key_manager_public_key_, key_manager_image_hash_, std::move(key_manager_addr_str), std::move(verified_proxy_keys),
       std::move(verified_worker_keys), std::move(verified_key_manager_keys),
       td::hex_encode(vm::std_boc_serialize(proxy_sc_code_).move_as_ok().as_slice()),
       td::hex_encode(vm::std_boc_serialize(worker_sc_code_).move_as_ok().as_slice()),
