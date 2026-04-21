@@ -47,20 +47,24 @@ make_seal_keys() {
   
   mr_enclave=$(cat /usr/share/cocoon/mr_enclave.txt)
   echo "Using MR_ENCLAVE: $mr_enclave"
-  
+
+  seal_port=$(grep -Po '\bcocoon_seal_port=\K\d+' /proc/cmdline 2>/dev/null | head -n1 || echo 12345)
+  seal_port="${seal_port:-12345}"
+  echo "Using seal-server vsock port: $seal_port"
+
   if [[ "$is_debug" = true ]]; then
     attest_log "cocoon:cocoon_debug"
   fi
-  
+
   for key_spec in "${KEYS[@]}"; do
     key_name="${key_spec%%:*}"
     key_file="$CERT_DIR/${key_spec##*:}"
-    
+
     if [[ "$is_debug" = true ]]; then
       echo -n "cococooncococooncococooncococoon" > "$key_file"
       [[ "$key_name" = "disk_encryption" ]] && key_hash="330b40587dfe15b2a0701c5b9141b108b71474b8b3d4f719f916d944c622b91c"
     else
-      key_hash=$(seal-client --mr-enclave "$mr_enclave" --output "$key_file" --key-name "$key_name") || {
+      key_hash=$(seal-client --port "$seal_port" --mr-enclave "$mr_enclave" --output "$key_file" --key-name "$key_name") || {
         echo "ERR: Failed to generate sealed key: $key_name" >&2
         exit 1
       }
