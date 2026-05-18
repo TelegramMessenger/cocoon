@@ -151,6 +151,10 @@ void TonScWrapper::run_callbacks() {
     on_transaction(std::move(*it));
   }
 
+  LOG_CHECK(lt_lt_ == next_state_->last_transaction_id_->lt_ && lt_hash_ == next_state_->last_transaction_id_->hash_)
+      << "missed transaction on " << address().rserialize(true) << ": reached lt=" << lt_lt_
+      << " expected lt=" << next_state_->last_transaction_id_->lt_;
+
   transactions_.clear();
   balance_ = next_state_->balance_;
   state_block_id_ = block_id_tl_to_obj(*next_state_->block_id_);

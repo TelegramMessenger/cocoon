@@ -141,6 +141,10 @@ class TonScWrapper {
     return state_block_id_;
   }
 
+  auto state_sync_utime() const {
+    return state_sync_utime_;
+  }
+
   void set_init_block_id(const ton::BlockIdExt &id) {
     init_block_id_ = id;
   }
