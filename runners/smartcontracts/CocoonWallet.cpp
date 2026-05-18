@@ -8,6 +8,8 @@
 #include "runners/BaseRunner.hpp"
 #include "cocoon-tl-utils/parsers.hpp"
 
+#include <algorithm>
+
 namespace cocoon {
 
 td::int64 CocoonWallet::coins_reserve() const {
@@ -58,45 +60,39 @@ void CocoonWallet::on_state_update(ton::tl_object_ptr<ton::tonlib_api::raw_fullA
   R.ensure();
 
   vm::CellSlice cs{vm::NoVm{}, R.move_as_ok()};
-  auto seqno = (td::int32)cs.fetch_long(32);
+  auto seqno = (td::uint32)cs.fetch_long(32);
   LOG(DEBUG) << "cocoon wallet: state update: seqno=" << seqno << " balance=" << balance();
+  CHECK(cocoon_wallet_seqno_ <= seqno);
+  if (cocoon_wallet_seqno_ < seqno) {
+    in_flight_.clear();
+  }
   cocoon_wallet_seqno_ = seqno;
 
-  if (last_message_seqno_ >= 0 && last_message_seqno_ < seqno) {
-    LOG(WARNING) << "cocoon wallet: resending transaction sent with seqno=" << last_message_seqno_;
-    last_message_seqno_ = -1;
-    last_message_messages_ = 0;
-    last_message_.clear();
-  }
-
-  if (transactions_.size() > 0 && last_message_.is_null()) {
+  if (!transactions_.empty() && in_flight_.empty()) {
     send_pending_transactions();
   }
 }
 
 void CocoonWallet::on_transaction(ton::tl_object_ptr<ton::tonlib_api::raw_transaction> tr) {
-  if (last_message_.is_null()) {
-    return;
-  }
-  if (last_message_->get_hash().as_slice() != tr->in_msg_->body_hash_) {
+  auto it = std::find_if(in_flight_.begin(), in_flight_.end(), [&](const InFlightMessage &m) {
+    return m.body->get_hash().as_slice() == tr->in_msg_->body_hash_;
+  });
+  if (it == in_flight_.end()) {
     LOG(WARNING) << "cocoon wallet: received unknown transaction";
     return;
   }
 
-  LOG(INFO) << "cocoon wallet: successfully sent " << last_message_messages_ << " messages";
+  LOG(INFO) << "cocoon wallet: successfully sent " << in_flight_count_ << " messages";
 
-  CHECK(last_message_messages_ <= transactions_.size());
-  auto it = transactions_.begin();
-  for (td::uint32 i = 0; i < last_message_messages_; i++) {
-    it->promise.set_value(td::Unit());
-    it++;
+  CHECK(in_flight_count_ <= transactions_.size());
+  auto tx_it = transactions_.begin();
+  for (td::uint32 i = 0; i < in_flight_count_; i++) {
+    tx_it->promise.set_value(td::Unit());
+    tx_it++;
   }
-
-  transactions_.erase(transactions_.begin(), it);
-  last_message_.clear();
-  last_message_seqno_ = -1;
-  last_message_messages_ = 0;
-  transactions_.erase(transactions_.begin(), it);
+  transactions_.erase(transactions_.begin(), tx_it);
+  in_flight_.clear();
+  in_flight_count_ = 0;
 }
 
 void CocoonWallet::send_transaction(block::StdAddress destination, td::int64 coins, td::Ref<vm::Cell> code,
@@ -104,7 +100,7 @@ void CocoonWallet::send_transaction(block::StdAddress destination, td::int64 coi
   LOG(DEBUG) << "cocoon wallet: queueing a transaction";
   transactions_.emplace_back(std::move(destination), coins, std::move(code), std::move(payload), std::move(promise));
 
-  if (transactions_.size() > 0 && last_message_.is_null()) {
+  if (in_flight_.empty()) {
     send_pending_transactions();
   }
 }
@@ -115,25 +111,29 @@ void CocoonWallet::send_pending_transactions() {
                  << low_balance_ << " CURRENT " << balance();
     return;
   }
-  if (transactions_.size() == 0 || !last_message_.is_null()) {
+  if (transactions_.empty()) {
     return;
   }
 
-  const auto p1 = (td::int64)(time(0) + 3600);
+  const bool rebuilding = in_flight_count_ > 0;
+  if (rebuilding) {
+    CHECK(in_flight_count_ <= transactions_.size());
+  }
+
+  const td::int64 ttl = (td::int64)time(0) + 3600;
   vm::CellBuilder cb0;
-  // subwallet, valid_until, seqno, send_mode
-  cb0.store_long(0, 32).store_long(p1, 32).store_long(cocoon_wallet_seqno_, 32);
+  // subwallet, valid_until, seqno
+  cb0.store_long(0, 32).store_long(ttl, 32).store_long(cocoon_wallet_seqno_, 32);
 
   td::int64 total_balance = 0;
   td::uint32 total = 0;
-
-  td::int64 coins_limit = std::min(to_nano(1000), balance());
+  const td::int64 coins_limit = std::min(to_nano(1000), balance());
 
   for (auto &tr : transactions_) {
-    if (total == 4) {
+    if (rebuilding ? total == in_flight_count_ : total == 4) {
       break;
     }
-    if (total_balance + tr.coins + coins_reserve() > coins_limit) {
+    if (!rebuilding && total_balance + tr.coins + coins_reserve() > coins_limit) {
       if (total == 0) {
         LOG(WARNING) << "ACTION REQUIRED: BALANCE ON CONTRACT " << address().rserialize(true)
                      << " IS TOO LOW: SENDING MESSAGE OF VALUE " << tr.coins << " CURRENT " << balance();
@@ -173,23 +173,37 @@ void CocoonWallet::send_pending_transactions() {
     }
     cb0.store_ref(cb.finalize());
 
+    total_balance += tr.coins;
     total++;
   }
 
   auto msg = BaseRunner::sign_message(*cocoon_wallet_private_key_, cb0.finalize());
-  last_message_ = msg;
-  last_message_seqno_ = cocoon_wallet_seqno_;
-  last_message_messages_ = total;
+  in_flight_.push_back({msg, ttl});
+  if (!rebuilding) {
+    in_flight_count_ = total;
+  }
 
   td::Ref<vm::Cell> code;
   if (cocoon_wallet_seqno_ == 0) {
     code = generate_sc_init_data();
   }
-
-  last_message_ = msg;
   next_resend_ = td::Timestamp::in(30);
 
   runner()->send_external_message(address(), code, msg, [](td::Result<td::Unit> R) {
+    if (R.is_error()) {
+      LOG(ERROR) << "cocoon wallet: failed to send external message: " << R.move_as_error();
+    }
+  });
+}
+
+void CocoonWallet::resend_latest_in_flight() {
+  td::Ref<vm::Cell> code;
+  if (cocoon_wallet_seqno_ == 0) {
+    code = generate_sc_init_data();
+  }
+  next_resend_ = td::Timestamp::in(30);
+  LOG(INFO) << "cocoon wallet: resending last transaction because of the timeout";
+  runner()->send_external_message(address(), code, in_flight_.back().body, [](td::Result<td::Unit> R) {
     if (R.is_error()) {
       LOG(ERROR) << "cocoon wallet: failed to send external message: " << R.move_as_error();
     }
@@ -200,25 +214,16 @@ void CocoonWallet::alarm() {
   if (runner_config()->ton_disabled) {
     return;
   }
-  if (transactions_.size() > 0 && last_message_.is_null()) {
-    send_pending_transactions();
+
+  if (in_flight_.empty() || in_flight_.back().valid_until < time(0)) {
+    if (!transactions_.empty()) {
+      send_pending_transactions();
+    }
+    return;
   }
 
-  if (next_resend_.is_in_past() && last_message_.not_null()) {
-    td::Ref<vm::Cell> code;
-    if (cocoon_wallet_seqno_ == 0) {
-      code = generate_sc_init_data();
-    }
-
-    next_resend_ = td::Timestamp::in(30);
-
-    LOG(INFO) << "cocoon wallet: resending last transaction because of the timeout";
-
-    runner()->send_external_message(address(), code, last_message_, [](td::Result<td::Unit> R) {
-      if (R.is_error()) {
-        LOG(ERROR) << "cocoon wallet: failed to send external message: " << R.move_as_error();
-      }
-    });
+  if (next_resend_.is_in_past()) {
+    resend_latest_in_flight();
   }
 }
 

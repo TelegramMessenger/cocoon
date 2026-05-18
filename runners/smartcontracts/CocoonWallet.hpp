@@ -53,8 +53,8 @@ class CocoonWallet : public TonScWrapper {
   auto pending_transactions_cnt() const {
     return transactions_.size();
   }
-  td::int32 active_transactions_cnt() const {
-    return last_message_messages_;
+  td::uint32 active_transactions_cnt() const {
+    return in_flight_count_;
   }
 
   static td::Ref<vm::Cell> code_boc();
@@ -85,10 +85,16 @@ class CocoonWallet : public TonScWrapper {
   };
 
   std::list<PendingTransaction> transactions_;
-  td::Ref<vm::Cell> last_message_;
-  td::int32 last_message_seqno_{-1};
-  td::uint32 last_message_messages_{0};
+
+  struct InFlightMessage {
+    td::Ref<vm::Cell> body;
+    td::int64 valid_until;
+  };
+  std::list<InFlightMessage> in_flight_;
+  td::uint32 in_flight_count_{0};
   td::Timestamp next_resend_;
+
+  void resend_latest_in_flight();
 };
 
 }  // namespace cocoon
