@@ -265,8 +265,10 @@ void WorkerRunner::alarm() {
   if (check_image_hashes()) {
     auto c = runner_config();
     if (c) {
-      CHECK(c->root_contract_config->has_worker_hash(local_image_hash_unverified_));
-      CHECK(c->root_contract_config->has_model_hash(td::sha256_bits256(model_name_)));
+      LOG_CHECK(c->root_contract_config->has_worker_hash(local_image_hash_unverified_))
+          << "Root contract has no worker hash: " << local_image_hash_unverified_.to_hex();
+      LOG_CHECK(c->root_contract_config->has_model_hash(td::sha256_bits256(model_name_)))
+          << "Root contract has no model hash: " << td::sha256_bits256(model_name_).to_hex();
     }
   }
   if (next_check_all_clients_at_.is_in_past()) {
