@@ -8,6 +8,7 @@
 #include "health-metrics.h"
 #include "health-stats.h"
 #include "health-render.h"
+#include "tee/cocoon/RATLS.h"
 #include "td/utils/logging.h"
 #include "td/utils/OptionParser.h"
 #include "td/utils/Status.h"
@@ -273,7 +274,16 @@ td::Result<std::string> all(std::istringstream&, const StatsCollector& stats) {
     out << gpu_out << "\n";
   }
 
-  out << render_tdx::get_status() << "\n";
+  TRY_RESULT(tee_type, TeeInterface::this_cpu_tee_type());
+  switch (tee_type) {
+    case TeeType::Tdx:
+      out << render_tdx::get_status() << "\n";
+      break;
+    case TeeType::Sev:
+      out << render_sev::get_status() << "\n";
+      break;
+  }
+
   out << render_service::render_all_status();
 
   return out.str();
