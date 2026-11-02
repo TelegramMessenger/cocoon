@@ -88,6 +88,7 @@ class Config:
     # Runtime control
     test: bool = False
     fake_ton: bool = False  # Disable real TON, use fake TON for testing
+    testnet: bool = False  # Use TON testnet instead of mainnet (requires test mode)
     local_mode: bool = False  # True for --local-all and local client execution
     instance: int = 0
 
@@ -208,6 +209,7 @@ class Config:
             vars.setdefault('HF_TOKEN', self.hf_token)
         if self.node_wallet_key:
             vars.setdefault('NODE_WALLET_KEY', self.node_wallet_key)
+        vars.setdefault('IS_TESTNET', int(self.testnet))
 
         return vars
 
@@ -283,8 +285,11 @@ def load_config_from_file(cli_args) -> Config:
     prepared_spec_dir = str(Path(tempfile.mkdtemp(prefix='cocoon-spec-')) / 'spec')
 
     if cli_args.local_all:
-        return Config(node_type='local_all', spec_dir='', owner_address='', build_dir=build_dir,
-                      prepared_spec_dir=prepared_spec_dir, local_run_dir='/tmp/run/', local_mode=True)
+        return Config(node_type='local_all', spec_dir='', owner_address=get('owner_address') or '',
+                      build_dir=build_dir, prepared_spec_dir=prepared_spec_dir, local_run_dir='/tmp/run/',
+                      local_mode=True, testnet=getbool('testnet', False),
+                      root_contract_address=get('root_contract_address', None),
+                      skip_build=bool(cli_args.skip_build))
 
     node_type = get('type', '').lower()
 
@@ -294,6 +299,11 @@ def load_config_from_file(cli_args) -> Config:
     spec = cli_args.spec or str(script_dir / 'spec' / f'spec-{node_type}')
     fake_ton = getbool('fake_ton', False)
     test = getbool('test', False)
+    testnet = getbool('testnet', False)
+    if testnet and not test:
+        # Runners refuse testnet outside of test mode (see KeyManagerRunner::load_config)
+        sys.exit('ERROR: --testnet requires --test')
+    ton_net = 'testnet' if testnet else 'mainnet'
 
     # Build config (ordered to match Config dataclass)
     cfg = Config(
@@ -312,15 +322,16 @@ def load_config_from_file(cli_args) -> Config:
         # Runtime control
         test=test,
         fake_ton=fake_ton,
+        testnet=testnet,
         instance=instance,
         # Worker-specific
         worker_coefficient=get('worker_coefficient', '1000'),
         hf_token=get('hf_token') or os.environ.get('HF_TOKEN'),
         # TON configs
         ton_config_base=get('ton_config_base',
-                            str(script_dir / 'spec/mainnet-base-ton-config.json')) if not fake_ton else None,
+                            str(script_dir / f'spec/{ton_net}-base-ton-config.json')) if not fake_ton else None,
         ton_config=get('ton_config',
-                       str(script_dir / 'spec/mainnet-full-ton-config.json')) if not fake_ton else None,
+                       str(script_dir / f'spec/{ton_net}-full-ton-config.json')) if not fake_ton else None,
         # Paths
         image_dir=get('image-dir', str(script_dir / 'images' / ('test' if test else 'prod'))),
         build_dir=get('build_dir', build_dir),
@@ -722,8 +733,15 @@ def ensure_build(build_dir: Path, targets: list[str]):
 
 
 def run_local_all(cfg):
+    real_ton = cfg.testnet
     print('=== Running COCOON locally (all components) ===')
-    print('Fake TON, Test, No VM. Config is mostly ignored')
+    if real_ton:
+        # Same local topology, but runners talk to TON testnet and to a root contract you deployed there.
+        if not cfg.root_contract_address:
+            sys.exit('ERROR: --local-all --testnet requires --root-contract-address (your testnet root contract)')
+        print(f'TON testnet, Test, No VM. Root contract: {cfg.root_contract_address}')
+    else:
+        print('Fake TON, Test, No VM. Config is mostly ignored')
 
     maybe_build(cfg)
 
@@ -733,10 +751,16 @@ def run_local_all(cfg):
 
     # Common test config
     base_vars = {
-        'owner_address': 'UQAuz15H1ZHrZ_psVrAra7HealMIVeFq0wguqlmFno1f3B-m',
-        'root_contract_address': 'EQBT4hy4vMEZ9uxSCuhw_gBKh9_AwmHXLe7Wo0O4Vh-4kRjJ',
+        'owner_address': cfg.owner_address or 'UQAuz15H1ZHrZ_psVrAra7HealMIVeFq0wguqlmFno1f3B-m',
+        'root_contract_address': (cfg.root_contract_address if real_ton
+                                  else 'EQBT4hy4vMEZ9uxSCuhw_gBKh9_AwmHXLe7Wo0O4Vh-4kRjJ'),
         'model': 'Qwen/Qwen3-8B',
     }
+    ton_configs = {}
+    if real_ton:
+        ton_configs = dict(ton_config_base=str(script_dir / 'spec/testnet-base-ton-config.json'),
+                           ton_config=str(script_dir / 'spec/testnet-full-ton-config.json'))
+    build_dir = cfg.build_dir
 
     # For local-all, everything runs on 127.0.0.1
     specs = {}
@@ -746,6 +770,9 @@ def run_local_all(cfg):
         ('client', 'ClientClientClientClientClientClientClientC=', 'gaEatwGNgLGOeFI/TRGfPdJG/K4G8picYHQkDHpLQ9w='),
         ('key-manager', 'KeyManagerKeyManagerKeyManagerKeyManagerKe0=', '4DV6iMUS16P6Y/6MlF6qfnxii7q2UWXUwSi4bgvcaf8='),
     ]:
+        # On real testnet each component pays/earns from its own wallet: override the public test keys with
+        # funded ones via COCOON_LOCAL_<PROXY|WORKER|CLIENT|KEY_MANAGER>_WALLET_KEY.
+        wallet_key = os.environ.get(f"COCOON_LOCAL_{node_type.upper().replace('-', '_')}_WALLET_KEY", app_key)
         cfg = Config(
             node_type=node_type,
             spec_dir=str(script_dir / 'spec' / f'spec-{node_type}'),
@@ -753,11 +780,13 @@ def run_local_all(cfg):
             external_worker_port=11001,
             external_client_port=11002,
             external_key_manager_port=13001,
-            node_wallet_key=app_key,  # just for tests make it same as APP_KEY
-            fake_ton=True,
+            node_wallet_key=wallet_key,  # fake-TON: same as APP_KEY
+            fake_ton=not real_ton,
+            testnet=real_ton,
             local_mode=True,  # Don't build models for local execution
             test=True,
-            build_dir=cfg.build_dir,
+            build_dir=build_dir,
+            **ton_configs,
             prepared_spec_dir=str(prepared_spec_dir) + f"-{node_type}",
             **base_vars
         )
@@ -789,6 +818,10 @@ def run_local_all(cfg):
         for cfg_file in Path(spec_dir).glob('*.json'):
             if cfg_file.name != 'global.config.json':
                 run([str(cocoon_init / 'cocoon-render-config-local'), str(cfg_file)], check=True)
+    if real_ton:
+        run([str(cocoon_init / 'cocoon-render-ton-config-local'), specs['proxy']], check=True)
+
+    ton_args = [] if real_ton else ['--disable-ton', '/tmp/run/fake-ton-config.json']
 
     # Start all
     print('\nStarting components...')
@@ -806,8 +839,7 @@ def run_local_all(cfg):
 
     # Proxy (blue)
     proxy_proc = popen(
-        [f'{cfg.build_dir}/proxy-runner', '--config', '/tmp/run/proxy-config.json', '-v3', '--disable-ton',
-         '/tmp/run/fake-ton-config.json'],
+        [f'{cfg.build_dir}/proxy-runner', '--config', '/tmp/run/proxy-config.json', '-v3'] + ton_args,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     procs.append(proxy_proc)
     t = threading.Thread(target=stream_output, args=(proxy_proc, 'PROXY ', '34'), daemon=True)
@@ -816,8 +848,7 @@ def run_local_all(cfg):
 
     # Worker (green)
     worker_proc = popen(
-        [f'{cfg.build_dir}/worker-runner', '--config', '/tmp/run/worker-config.json', '-v3', '--disable-ton',
-         '/tmp/run/fake-ton-config.json'],
+        [f'{cfg.build_dir}/worker-runner', '--config', '/tmp/run/worker-config.json', '-v3'] + ton_args,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     procs.append(worker_proc)
     t = threading.Thread(target=stream_output, args=(worker_proc, 'WORKER', '32'), daemon=True)
@@ -826,8 +857,7 @@ def run_local_all(cfg):
 
     # Client (yellow)
     client_proc = popen(
-        [f'{cfg.build_dir}/client-runner', '--config', '/tmp/run/client-config.json', '-v3', '--disable-ton',
-         '/tmp/run/fake-ton-config.json'],
+        [f'{cfg.build_dir}/client-runner', '--config', '/tmp/run/client-config.json', '-v3'] + ton_args,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     procs.append(client_proc)
     t = threading.Thread(target=stream_output, args=(client_proc, 'CLIENT', '33'), daemon=True)
@@ -836,8 +866,7 @@ def run_local_all(cfg):
 
     # Key Manager (magenta)
     key_manager_proc = popen(
-        [f'{cfg.build_dir}/key-manager-runner', '--config', '/tmp/run/key-manager-config.json', '-v3', '--disable-ton',
-         '/tmp/run/fake-ton-config.json'],
+        [f'{cfg.build_dir}/key-manager-runner', '--config', '/tmp/run/key-manager-config.json', '-v3'] + ton_args,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     procs.append(key_manager_proc)
     t = threading.Thread(target=stream_output, args=(key_manager_proc, 'KEYMANAGER', '35'), daemon=True)
@@ -899,6 +928,8 @@ def parse_args():
     parser.add_argument('--test', action='store_true', default=None, help='Test mode (debug shell, SSH)')
     parser.add_argument('--fake-ton', '--pseudo', action='store_true', default=None, dest='fake_ton',
                         help='Fake-TON mode (disable real TON network)')
+    parser.add_argument('--testnet', action='store_true', default=None,
+                        help='Use TON testnet (requires --test; run scripts/fetch-testnet-ton-config first)')
     parser.add_argument('--local-all', action='store_true', help='Run all components locally')
     parser.add_argument('--prepare-only', action='store_true', help='Prepare spec to /tmp/spec/')
     parser.add_argument('--print-only', action='store_true', help='Print command and exit')

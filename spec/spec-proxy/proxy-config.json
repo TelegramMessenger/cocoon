@@ -1,6 +1,6 @@
 {
   "is_test": "$IS_DEBUG",
-  "is_testnet" : false,
+  "is_testnet" : "$IS_TESTNET",
   "http_port" : 11000,
   "workers_rpc_port"  : 11101,
   "client_rpc_port"  : 11102,

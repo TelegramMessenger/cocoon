@@ -1,6 +1,6 @@
 {
   "is_test": "$IS_DEBUG",
-  "is_testnet" : false,
+  "is_testnet" : "$IS_TESTNET",
   "check_hashes" : false,
   "add_default_key" : "$IS_DEBUG",
   "http_port" : 13000,

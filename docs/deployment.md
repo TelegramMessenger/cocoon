@@ -151,7 +151,7 @@ You may want to create your own root smart contract for testing purposes. If you
 
 Note that you don't have to manually create proxy, worker and client's smart contracts. It is all handled automatically.
 
-**NB**: testnet is currently not supported, minor changes in spec are required.
+**NB**: to run on TON testnet use `--test --testnet`, see [testnet.md](testnet.md).
 
 You will have to put some TONs on worker, client and proxy accounts. See their HTTP stats for details.
 

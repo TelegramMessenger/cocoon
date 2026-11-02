@@ -1,0 +1,27 @@
+#!/bin/bash
+# fetch-testnet-ton-config - Download the official TON testnet global config
+# and split it into the base/full files expected by cocoon-launch --testnet.
+#
+#   spec/testnet-base-ton-config.json  - network constants (dht, validator), no liteservers
+#   spec/testnet-full-ton-config.json  - full config including liteservers
+set -euo pipefail
+
+URL="${TON_TESTNET_CONFIG_URL:-https://ton.org/testnet-global.config.json}"
+SPEC_DIR="$(cd "$(dirname "$0")/.." && pwd)/spec"
+
+command -v jq >/dev/null || { echo "ERROR: jq is required" >&2; exit 1; }
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+echo "Downloading $URL"
+curl -fsSL "$URL" -o "$tmp"
+
+jq -e '.validator.zero_state and .dht and (.liteservers | length > 0)' "$tmp" >/dev/null \
+  || { echo "ERROR: downloaded file is not a valid TON global config" >&2; exit 1; }
+
+jq '.' "$tmp" > "$SPEC_DIR/testnet-full-ton-config.json"
+jq 'del(.liteservers)' "$tmp" > "$SPEC_DIR/testnet-base-ton-config.json"
+
+echo "Written: $SPEC_DIR/testnet-base-ton-config.json"
+echo "Written: $SPEC_DIR/testnet-full-ton-config.json ($(jq '.liteservers | length' "$tmp") liteservers)"
