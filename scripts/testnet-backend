@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""testnet-backend - tiny OpenAI-compatible inference stub for COCOON test/testnet workers.
+
+A worker forwards requests to 127.0.0.1:8000 (forward_requests_to). On machines without a GPU this stub
+lets the whole path run end to end - client -> proxy -> worker -> backend - including token accounting
+and payments, so the protocol and contracts can be exercised on TON testnet.
+
+It is NOT a model: replies are deterministic and labelled as testnet output.
+Supports: /v1/models, /v1/chat/completions (stream and non-stream, usage, tools -> tool_calls),
+/v1/completions, /health. Stdlib only.
+
+    scripts/testnet-backend [--port 8000] [--model Qwen/Qwen3-0.6B]
+"""
+import argparse
+import json
+import time
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+MODEL = 'Qwen/Qwen3-0.6B'
+
+
+def ntokens(text: str) -> int:
+    # rough, stable token estimate (~4 chars/token) - good enough for exercising billing
+    return max(1, (len(text) + 3) // 4)
+
+
+def prompt_text(body: dict) -> str:
+    parts = []
+    for m in body.get('messages', []):
+        c = m.get('content')
+        if isinstance(c, str):
+            parts.append(c)
+        elif isinstance(c, list):
+            parts += [p.get('text', '') for p in c if isinstance(p, dict)]
+    return '\n'.join(parts) if parts else str(body.get('prompt', ''))
+
+
+def last_user(body: dict) -> str:
+    for m in reversed(body.get('messages', [])):
+        if m.get('role') == 'user':
+            c = m.get('content')
+            return c if isinstance(c, str) else ' '.join(p.get('text', '') for p in c or [] if isinstance(p, dict))
+    return str(body.get('prompt', ''))
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, fmt, *args):
+        print('[backend] ' + fmt % args, flush=True)
+
+    def _json(self, code: int, obj: dict):
+        data = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.startswith('/health'):
+            return self._json(200, {'status': 'ok'})
+        if self.path.startswith('/v1/models'):
+            return self._json(200, {'object': 'list', 'data': [{'id': MODEL, 'object': 'model', 'owned_by': 'testnet'}]})
+        self._json(404, {'error': 'not found'})
+
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length') or 0)
+        try:
+            body = json.loads(self.rfile.read(n) or b'{}')
+        except Exception:
+            return self._json(400, {'error': {'message': 'invalid json'}})
+        if self.path.startswith('/v1/chat/completions'):
+            return self.chat(body)
+        if self.path.startswith('/v1/completions'):
+            return self.completion(body)
+        self._json(404, {'error': 'not found'})
+
+    def chat(self, body: dict):
+        rid = 'chatcmpl-' + uuid.uuid4().hex[:24]
+        now = int(time.time())
+        model = body.get('model') or MODEL
+        p_tok = ntokens(prompt_text(body))
+        tools = body.get('tools') or []
+        if tools and body.get('tool_choice') != 'none':
+            fn = tools[0].get('function', {}).get('name', 'tool')
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'call_' + uuid.uuid4().hex[:12], 'type': 'function',
+                'function': {'name': fn, 'arguments': json.dumps({'testnet': True})}}]}
+            finish, text = 'tool_calls', ''
+        else:
+            text = f'[COCOON testnet stub] received: {last_user(body)[:200]}'
+            message = {'role': 'assistant', 'content': text}
+            finish = 'stop'
+        c_tok = ntokens(text or json.dumps(message))
+        usage = {'prompt_tokens': p_tok, 'completion_tokens': c_tok, 'total_tokens': p_tok + c_tok}
+
+        if not body.get('stream'):
+            return self._json(200, {'id': rid, 'object': 'chat.completion', 'created': now, 'model': model,
+                                    'choices': [{'index': 0, 'message': message, 'finish_reason': finish}],
+                                    'usage': usage})
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+
+        def send(obj):
+            self.wfile.write(b'data: ' + json.dumps(obj).encode() + b'\n\n')
+            self.wfile.flush()
+
+        base = {'id': rid, 'object': 'chat.completion.chunk', 'created': now, 'model': model}
+        if finish == 'tool_calls':
+            tc = dict(message['tool_calls'][0], index=0)
+            send(dict(base, choices=[{'index': 0, 'delta': {'role': 'assistant', 'tool_calls': [tc]}, 'finish_reason': None}]))
+        else:
+            for i in range(0, len(text), 24):
+                send(dict(base, choices=[{'index': 0, 'delta': {'content': text[i:i + 24]}, 'finish_reason': None}]))
+        send(dict(base, choices=[{'index': 0, 'delta': {}, 'finish_reason': finish}]))
+        if (body.get('stream_options') or {}).get('include_usage'):
+            send(dict(base, choices=[], usage=usage))
+        self.wfile.write(b'data: [DONE]\n\n')
+        self.wfile.flush()
+        self.close_connection = True
+
+    def completion(self, body: dict):
+        text = f'[COCOON testnet stub] {str(body.get("prompt", ""))[:200]}'
+        p_tok, c_tok = ntokens(str(body.get('prompt', ''))), ntokens(text)
+        self._json(200, {'id': 'cmpl-' + uuid.uuid4().hex[:24], 'object': 'text_completion', 'created': int(time.time()),
+                         'model': body.get('model') or MODEL,
+                         'choices': [{'index': 0, 'text': text, 'finish_reason': 'stop'}],
+                         'usage': {'prompt_tokens': p_tok, 'completion_tokens': c_tok, 'total_tokens': p_tok + c_tok}})
+
+
+def main():
+    global MODEL
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--host', default='127.0.0.1')
+    ap.add_argument('--port', type=int, default=8000)
+    ap.add_argument('--model', default=MODEL)
+    a = ap.parse_args()
+    MODEL = a.model
+    print(f'testnet-backend on {a.host}:{a.port}, model {MODEL}', flush=True)
+    ThreadingHTTPServer((a.host, a.port), Handler).serve_forever()
+
+
+if __name__ == '__main__':
+    main()
