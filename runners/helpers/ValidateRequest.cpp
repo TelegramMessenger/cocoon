@@ -460,6 +460,16 @@ struct CtxLevel {
     }
   }
 
+  // Accept every field of the current JSON object without validating it.
+  // Used for free-form payloads such as JSON Schema (tool parameters, response_format).
+  void mark_all_fields_processed() {
+    if (mode == Mode::Json && obj && obj->is_object()) {
+      for (auto &[name, value] : obj->items()) {
+        processed_fields.insert(name);
+      }
+    }
+  }
+
   td::Status check_unprocessed_fields() {
     switch (mode) {
       case Mode::Form: {
@@ -712,6 +722,10 @@ struct Ctx {
 
   void set_field_as_processed(std::string v) {
     back().processed_fields.insert(std::move(v));
+  }
+
+  void mark_all_fields_processed() {
+    back().mark_all_fields_processed();
   }
 
   bool is_array() const {
@@ -1047,6 +1061,76 @@ static td::Status process_stream_options(Ctx &ctx) {
   return td::Status::OK();
 }
 
+// Free-form JSON object (e.g. JSON Schema): must be an object, contents are not validated.
+static td::Status process_json_object(Ctx &ctx) {
+  if (!ctx.is_object()) {
+    return td::Status::Error(ton::ErrorCode::protoviolation, PSTRING() << ctx.path() << " must be an object");
+  }
+  ctx.mark_all_fields_processed();
+  return td::Status::OK();
+}
+
+static td::Status process_tool_definition(Ctx &ctx) {
+  if (!ctx.is_object()) {
+    return td::Status::Error(ton::ErrorCode::protoviolation, PSTRING() << ctx.path() << " must be an object");
+  }
+  std::string type;
+  TRY_STATUS(ctx.process_obj_field("type", true, [&type](Ctx &ctx) {
+    TRY_RESULT_ASSIGN(type, ctx.get_string());
+    return td::Status::OK();
+  }));
+  if (type == "function") {
+    return ctx.process_obj_field("function", true, [](Ctx &ctx) {
+      TRY_STATUS(ctx.process_obj_field("name", true, process_string));
+      TRY_STATUS(ctx.process_obj_field("description", false, process_string));
+      TRY_STATUS(ctx.process_obj_field("parameters", false, process_json_object));
+      TRY_STATUS(ctx.process_obj_field("strict", false, process_boolean));
+      return td::Status::OK();
+    });
+  } else if (type == "custom") {
+    return ctx.process_obj_field("custom", true, process_json_object);
+  }
+  return td::Status::Error(ton::ErrorCode::protoviolation, PSTRING() << ctx.path() << " has unknown type " << type);
+}
+
+static td::Status process_tool_choice(Ctx &ctx) {
+  if (ctx.is_string()) {
+    TRY_RESULT(v, ctx.get_string());
+    if (v == "none" || v == "auto" || v == "required") {
+      return td::Status::OK();
+    }
+    return td::Status::Error(ton::ErrorCode::protoviolation, PSTRING() << ctx.path() << " has unknown value " << v);
+  }
+  if (!ctx.is_object()) {
+    return td::Status::Error(ton::ErrorCode::protoviolation,
+                             PSTRING() << ctx.path() << " must be a string or an object");
+  }
+  std::string type;
+  TRY_STATUS(ctx.process_obj_field("type", true, [&type](Ctx &ctx) {
+    TRY_RESULT_ASSIGN(type, ctx.get_string());
+    return td::Status::OK();
+  }));
+  if (type == "function") {
+    return ctx.process_obj_field("function", true, [](Ctx &ctx) {
+      TRY_STATUS(ctx.process_obj_field("name", true, process_string));
+      return td::Status::OK();
+    });
+  }
+  // "allowed_tools", "custom" and future variants: accept as-is, the inference engine validates them
+  ctx.mark_all_fields_processed();
+  return td::Status::OK();
+}
+
+static td::Status process_response_format(Ctx &ctx) {
+  if (!ctx.is_object()) {
+    return td::Status::Error(ton::ErrorCode::protoviolation, PSTRING() << ctx.path() << " must be an object");
+  }
+  TRY_STATUS(ctx.process_obj_field("type", true, process_string));
+  // json_schema / schema payloads are free-form JSON Schema
+  ctx.mark_all_fields_processed();
+  return td::Status::OK();
+}
+
 static td::Status process_chat_template_kwargs(Ctx &ctx) {
   TRY_STATUS(ctx.process_obj_field("enable_thinking", false, process_boolean));
   return td::Status::OK();
@@ -1118,9 +1202,7 @@ static td::Status process_chat_completions(Ctx &ctx) {
   TRY_STATUS(ctx.process_obj_field("prompt_cache_key", false, process_string));
   TRY_STATUS(ctx.process_obj_field("prompt_cache_retention", false, process_string));
   TRY_STATUS(ctx.process_obj_field("reasoning_effort", false, process_string));
-  TRY_STATUS(ctx.process_obj_field("response_format", false, [](Ctx &ctx) {  // do not validate
-    return td::Status::OK();
-  }));
+  TRY_STATUS(ctx.process_obj_field("response_format", false, process_response_format));
   TRY_STATUS(ctx.process_obj_field("safety_identifier", false, process_string));
   TRY_STATUS(ctx.process_obj_field("seed", false, process_integer));
   TRY_STATUS(ctx.process_obj_field("service_tier", false, process_integer));
@@ -1135,13 +1217,9 @@ static td::Status process_chat_completions(Ctx &ctx) {
   }));
   TRY_STATUS(ctx.process_obj_field("stream_options", false, process_stream_options));
   TRY_STATUS(ctx.process_obj_field("temperature", false, process_double));
-  if (false) {
-    TRY_STATUS(ctx.process_obj_field("tool_choice", false, [](Ctx &ctx) { return td::Status::OK(); }));
-  }
-  if (false) {
-    TRY_STATUS(ctx.process_obj_field(
-        "tools", false, [](Ctx &ctx) { return ctx.process_array(false, [](Ctx &ctx) { return td::Status::OK(); }); }));
-  }
+  TRY_STATUS(ctx.process_obj_field("tool_choice", false, process_tool_choice));
+  TRY_STATUS(ctx.process_obj_field("tools", false,
+                                   [](Ctx &ctx) { return ctx.process_array(true, process_tool_definition); }));
   TRY_STATUS(ctx.process_obj_field("top_logprobs", false, process_integer));
   TRY_STATUS(ctx.process_obj_field("top_p", false, process_double));
   TRY_STATUS(ctx.process_obj_field("user", false, process_string));
@@ -1324,6 +1402,14 @@ td::Result<td::Bits256> parse_bits256_from_json(td::Slice val) {
     return td::Status::Error(ton::ErrorCode::protoviolation, "public_key bad length");
   }
   return res;
+}
+
+td::Status validate_plain_chat_completions(td::Slice request) {
+  TRY_RESULT(b, parse_json(request));
+  Ctx ctx(&b);
+  ctx.default_max_tokens = 0;
+  TRY_STATUS(process_chat_completions(ctx));
+  return ctx.check_unprocessed_fields();
 }
 
 td::Result<td::BufferSlice> validate_decrypt_request(std::string url, td::Slice content_type, td::BufferSlice request,
