@@ -39,6 +39,10 @@ td::Status decrypt_json(nlohmann::json &value, const td::Bits256 &private_key, t
 td::Status decrypt_form(MultipartFormDataMap &value, const td::Bits256 &private_key, td::Bits256 &public_key,
                         bool check_public_key, bool client_to_worker);
 
+// Validates an unencrypted /v1/chat/completions body with the same rules the worker applies.
+// Intended for tests and tooling.
+td::Status validate_plain_chat_completions(td::Slice request);
+
 td::Result<td::BufferSlice> validate_decrypt_request(std::string url, td::Slice content_type, td::BufferSlice request,
                                                      std::string *model, td::int64 *max_tokens,
                                                      const td::Bits256 &private_key, td::Bits256 *client_public_key);
