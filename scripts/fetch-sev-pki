@@ -1,0 +1,30 @@
+#!/bin/bash
+# fetch-sev-pki - Download AMD SEV product certificate chains and CRLs from AMD KDS.
+#
+# tee/router loads <dir>/<Product>.cert_chain.pem and <dir>/<Product>.cert_chain_crl.pem at startup and
+# aborts if they are missing, even with the "@any" policy used by --local-all. Inside COCOON images they
+# are provided by sev-pki-update (cocoon-init-common: init_sev_pki); for local and test runs use this script.
+#
+# Usage: scripts/fetch-sev-pki [dir]   (default: /etc/tee/sev)
+set -euo pipefail
+
+DIR="${1:-/etc/tee/sev}"
+KDS="${SEV_KDS_URL:-https://kdsintf.amd.com/vcek/v1}"
+mkdir -p "$DIR"
+command -v openssl >/dev/null || { echo "ERROR: openssl is required" >&2; exit 1; }
+
+# Siena is skipped, as in init_sev_pki ("1.5 Determining the Product Name", VCEK/KDS spec)
+for product in Milan Genoa Turin; do
+  tmp=$(mktemp)
+  for attempt in 1 2 3 4 5; do
+    # AMD KDS rate-limits requests; back off and retry
+    if curl -fsSL "$KDS/$product/cert_chain" -o "$DIR/$product.cert_chain.pem" \
+       && curl -fsSL "$KDS/$product/crl" -o "$tmp"; then
+      break
+    fi
+    sleep $((attempt * 10))
+  done
+  openssl crl -inform DER -in "$tmp" -outform PEM -out "$DIR/$product.cert_chain_crl.pem"
+  rm -f "$tmp"
+  echo "ok: $product"
+done

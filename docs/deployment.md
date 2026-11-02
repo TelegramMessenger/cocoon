@@ -83,6 +83,10 @@ cocoon-launch auto-builds models if needed when `--model` is specified.
 Run all components locally without VM or TON for fast iteration and debugging.
 
 ```bash
+# The TEE router needs AMD SEV certificate chains and CRLs (provided by sev-pki-update inside COCOON images);
+# outside the images fetch them once:
+sudo ./scripts/fetch-sev-pki /etc/tee/sev
+
 # Start all components (auto-builds on first run)
 ./scripts/cocoon-launch --local-all
 
