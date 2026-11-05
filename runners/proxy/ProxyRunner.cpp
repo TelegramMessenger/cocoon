@@ -1425,6 +1425,7 @@ td::Result<std::shared_ptr<ProxyWorkerConnectionInfo>> ProxyRunner::choose_conne
   std::shared_ptr<ProxyWorkerConnectionInfo> best_conn;
 
   double best_worker_connection_weight = 1e100;
+  double best_worker_recent_queries = 1e100;
 
   for (auto &x : it->second.connections) {
     if (x.second->is_disabled) {
@@ -1440,10 +1441,18 @@ td::Result<std::shared_ptr<ProxyWorkerConnectionInfo>> ProxyRunner::choose_conne
       continue;
     }
     if (x.second->coefficient <= max_coefficient) {
-      auto weight = x.second->running_queries() * x.second->average_query_time();
-      if (weight < best_worker_connection_weight) {
+      // Load = in-flight queries x their average time. A worker with no timing history yet counts each in-flight
+      // query as one second, so it is not seen as idle while busy. Equal load (typically several idle workers) goes
+      // to the worker that served fewer queries recently, so a newly joined worker gets traffic instead of the
+      // first connection taking every request.
+      auto avg = x.second->average_query_time();
+      double weight = x.second->running_queries() * (avg > 0 ? avg : 1.0);
+      double recent = x.second->recent_queries();
+      if (weight < best_worker_connection_weight ||
+          (weight == best_worker_connection_weight && recent < best_worker_recent_queries)) {
         best_conn = x.second;
         best_worker_connection_weight = weight;
+        best_worker_recent_queries = recent;
       }
     } else {
       if (min_coefficient > x.second->coefficient) {

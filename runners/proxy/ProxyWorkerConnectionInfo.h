@@ -80,6 +80,11 @@ struct ProxyWorkerConnectionInfo : public std::enable_shared_from_this<ProxyWork
     }
   }
 
+  // Queries finished in the last ~10 minutes (amortized). Used to share idle-time traffic fairly between workers.
+  double recent_queries() {
+    return total_queries_();
+  }
+
   double average_query_overhead() {
     auto v1 = total_queries_();
     auto v2 = total_worker_queries_time_();
